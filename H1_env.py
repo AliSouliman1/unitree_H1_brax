@@ -39,7 +39,6 @@ class H1(PipelineEnv):
       self,
       obs_noise: float = 0.05,
       action_scale: float = 0.3,
-      kick_vel: float = 0.05,
       disturbance_vel: float =0.05,
       contact_limit: float = 0.021,# distance smalled than which we consider there is contact between the feet and the ground
       done_limit: float = 0.6,# when the robot is falling over, might need to change depending 
@@ -74,7 +73,7 @@ class H1(PipelineEnv):
         # store site position for contact detection
         feet_site = ["left_foot_back","left_foot_front","right_foot_back","right_foot_front"]
         feet_site_id = [mujoco.mj_name2id(sys.mj_model, mujoco.mjtObj.mjOBJ_SITE.value, f) for f in feet_site] #todo : what does value does here, seems the same results without it
-        feet_site_id2 = [sys.mj_model.site(f).id for f in feet_site]
+        #feet_site_id2 = [sys.mj_model.site(f).id for f in feet_site]
         #print(feet_site_id2)
         #print(sys.mj_model.site("left_foot_back").pos)
         self.feet_site_id = jp.array(feet_site_id)
@@ -98,12 +97,12 @@ class H1(PipelineEnv):
         ###joint position and control 
         #free joint 7:3 pos and 4 quaternion orinetaion  
 
-        actuator_names=["left_hip_yaw","left_hip_roll","left_hip_pitch","left_knee","left_ankle","right_hip_yaw","right_hip_roll",
-                "right_hip_pitch","right_knee","right_ankle","torso","left_shoulder_pitch","left_shoulder_roll",
-                "left_shoulder_yaw","left_elbow","right_shoulder_pitch","right_shoulder_roll","right_shoulder_yaw","right_elbow"
-                
-                ]
-        motor_id=[sys.mj_model.joint(f).id for f in actuator_names]
+        #actuator_names=["left_hip_yaw","left_hip_roll","left_hip_pitch","left_knee","left_ankle","right_hip_yaw","right_hip_roll",
+        #        "right_hip_pitch","right_knee","right_ankle","torso","left_shoulder_pitch","left_shoulder_roll",
+        #        "left_shoulder_yaw","left_elbow","right_shoulder_pitch","right_shoulder_roll","right_shoulder_yaw","right_elbow"
+        #        
+        #        ]
+        #motor_id=[sys.mj_model.joint(f).id for f in actuator_names]
         #print(motor_id)
         #todo : the joints where we have an actuator
         self.default_jnt_angle = jp.concatenate([
@@ -128,7 +127,7 @@ class H1(PipelineEnv):
         #print(self.motor_angle)
         #print(len(sys.mj_model.jnt_range[]))
         #todo: add joint limitis if want to implement a negative reward for getting closr to joint limits
-        self.standing = sys.mj_model.keyframe('home').qpos[7:] #todo: this should wor because we don't have ball joints or we would
+        self.standing = sys.mj_model.keyframe('home').qpos[7:] #todo: this should work because we don't have ball joints or we would
                                                                     #need to save and use ctrl since the dims of this and action would be diifernt
 
 
@@ -181,10 +180,7 @@ class H1(PipelineEnv):
         # joint_velocity: joint velocity of the robot
         body_pos = pipeline_state.x
         body_vel = pipeline_state.xd
-        joint_angle = jp.concatenate([
-            pipeline_state.q[0:3],
-            pipeline_state.q[7:] #todo: might bug need to check
-        ])
+
         limited_angle = jp.concatenate([pipeline_state.q[7:]])
         #todo: chec if the joints velocities are needed
         # joint_velocity = jp.concatenate([ 
@@ -196,11 +192,11 @@ class H1(PipelineEnv):
         #     pipeline_state.qd[25:28],
         #     pipeline_state.qd[31].reshape(-1)
         # ])
-        print(limited_angle)
+        #print(limited_angle)
         # Observation
 
         # Get the observation of the environment
-        obs = self._get_obs(pipeline_state, state.info, joint_angle)
+        obs = self._get_obs(pipeline_state, state.info)
 
         
         ###########################
@@ -213,8 +209,8 @@ class H1(PipelineEnv):
         left_foot_pos = foot_pos[0:2]
         right_foot_pos = foot_pos[2:4]
 
-        left_contact = jp.all(left_foot_pos < self.contact_limit)
-        right_contact = jp.all(right_foot_pos < self.contact_limit)
+        left_contact = jp.all(left_foot_pos < 0.021)
+        right_contact = jp.all(right_foot_pos < 0.021)
 
         # check if the feet are in contact with the ground
         contact = jp.array([left_contact, right_contact])
@@ -227,7 +223,7 @@ class H1(PipelineEnv):
         first_contact = (state.info['Feet air time']>0) * contact_filt
 
         # update the feet air time
-        state.info['Feet air time'] += self.timestep
+        state.info['Feet air time'] += self.timestep#todo: simestep or dt
 
 
 
@@ -238,7 +234,7 @@ class H1(PipelineEnv):
         ###########################
         #Termination of epoisode#
         ###########################
-        done = body_pos.pos[self.pelvis_id-1,2] < self.done_limit #todo: define the done condition and check if there are situation for terminatin joint limits
+        done = pipeline_state.x.pos[self.pelvis_id-1,2] < 0.6 #todo: define the done condition and check if there are situation for terminatin joint limits
 
 
         ###########################
@@ -314,18 +310,18 @@ class H1(PipelineEnv):
         # update state.info to track the training progress and gather useful infomation
 
         # update the state information
-        state.info['State'] = pipeline_state
+        #state.info['State'] = pipeline_state
         state.info['Random generator'] = rng
         state.info['Last action'] = action
         #state.info['Last pelvis position'] = body_pos.pos[self.pelvis_id-1]
         #state.info['Last pelvis velocity'] = body_vel.vel[self.pelvis_id-1]
-        state.info['Last joint angle'] = joint_angle
+        #state.info['Last joint angle'] = joint_angle
         state.info['Last Contact'] = contact
         state.info['Feet air time'] *= ~contact_filt
         state.info['Reward'] = reward
         # state.info['Reward dict'] = rewards
         state.info['Step'] += 1
-        state.info['Step total'] += 1 #todo: inn reset it is set to zero, maybe could remove no use
+        state.info['Step total'] += 1 #todo: inn reset it is set to zero, maybe could remove no use or it measure the len of episode the other when to change command
         state.info['Total distance'] = math.normalize(body_pos.pos[self.pelvis_id-1][:2])[1]
 
         # update the control commands when more than 500 timestep has achieved
@@ -371,13 +367,13 @@ class H1(PipelineEnv):
         pipeline_state = self.pipeline_init(self.inital_qpos,jp.zeros(self.nv))
         state_info = {
 
-            'State': pipeline_state,
+            #'State': pipeline_state,
             'Random generator': rng,
             'Control commands': self.control_commands(key),
             'Last action': jp.zeros(self.nu),
             #'Last pelvis position': jp.zeros(3),
             #'Last pelvis velocity': jp.zeros(3),
-            'Last joint angle': jp.zeros(self.jnt_size),
+            #'Last joint angle': jp.zeros(self.jnt_size),
             'Last Contact': jp.zeros(2,dtype=bool),
             'Feet air time': jp.zeros(2),
             'Reward': 0.0,
@@ -396,10 +392,7 @@ class H1(PipelineEnv):
         metrics = {'Total distance': 0.0,
                    'reward':0.0}
         
-        joint_angle = jp.concatenate([
-            pipeline_state.q[0:3],
-            pipeline_state.q[7:]
-        ])
+
         """ joint_velocity = jp.concatenate([
             pipeline_state.qd[0:3],
             pipeline_state.qd[6:9],
@@ -410,7 +403,7 @@ class H1(PipelineEnv):
             pipeline_state.qd[31].reshape(-1)
         ]) """
 
-        obs = self._get_obs(pipeline_state, state_info, joint_angle)
+        obs = self._get_obs(pipeline_state, state_info)
 
         # construct the state
         state= State(
@@ -434,8 +427,7 @@ class H1(PipelineEnv):
     def _get_obs(
             self,
             pipeline_state: State,
-            state_info: dict[str,Any],
-            joint_angle: jax.Array
+            state_info: dict[str,Any]
     ) -> jax.Array:
         """
         Get the observation of the environment.
@@ -451,9 +443,14 @@ class H1(PipelineEnv):
         """
         # calculate the inverse of quaternion of pelvis
         inv_pelvis_rot = math.quat_inv(pipeline_state.x.rot[self.pelvis_id-1])
-        print("joint_angle   ",joint_angle)
-        print("df joint      ",self.default_jnt_angle)
+        #print("joint_angle   ",joint_angle)
+        #print("df joint      ",self.default_jnt_angle)
         # create observation vector
+        joint_angle = jp.concatenate([
+            pipeline_state.q[0:3],
+            pipeline_state.q[7:] #todo: might bug need to check
+        ])
+
         obs = jp.concatenate([
             # pelvis linear velocity
             pipeline_state.xd.vel[self.pelvis_id-1]*2.0,
@@ -603,7 +600,7 @@ class H1(PipelineEnv):
 
         # calculate the error
         linear_vel_err = jp.sum(jp.square(command[:2] - body_vel.vel[self.pelvis_id-1][:2]))
-
+        #todo: chec this equation might need to uncomment local_vel
         # calculate the reward term
         reward = jp.exp(-linear_vel_err/0.25)
 
@@ -637,11 +634,11 @@ make_networks_factory = functools.partial(
 #pre_model = model.load_params(pre_model_path)
 # previous_params=pre_model
 train_fn = functools.partial(
-      ppo.train, num_timesteps=200000000,num_evals=10,
+      ppo.train, num_timesteps=1000000,num_evals=10, #increase the number of steps
       reward_scaling=1, episode_length=1000, normalize_observations=True,
-      action_repeat=1, unroll_length=20, num_minibatches=64,
-      num_updates_per_batch=4, discounting=0.99, learning_rate=3.0e-4,
-      entropy_cost=1e-2, num_envs=2048, batch_size=512,
+      action_repeat=1, unroll_length=20, num_minibatches=32,
+      num_updates_per_batch=4, discounting=0.97, learning_rate=3.0e-4,
+      entropy_cost=1e-2, num_envs=4096, batch_size=256,
       network_factory=make_networks_factory)#todo add previous model
 
 x_data = []
@@ -665,9 +662,9 @@ make_inference_fn, params, _= train_fn(environment=env,
                                        eval_env=eval_env)
 
 # save params
-model_path = '/home/icepomelo/Code/policy_walking_final1'
+model_path = 'Code/policy_walking_final1'
 model.save_params(model_path, params)
-full_path = '/home/icepomelo/Code/inference_walking_final1'
+full_path = 'Code/inference_walking_final1'
 # save inference func
 with open(full_path, 'wb') as f:
     dill.dump(make_inference_fn, f)
