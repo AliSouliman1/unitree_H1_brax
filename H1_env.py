@@ -246,10 +246,15 @@ class H1(PipelineEnv):
         #Reward
         ###########################
         #Calculate the reward whcih will appended to the info of the state
-        rewards = {
+        joint_angle = jp.concatenate([
+            pipeline_state.q[0:3],
+            pipeline_state.q[7:] #todo: might bug need to check
+        ])
+
+        """rewards = {
             'tracking linear velocity reward':(
-                2*self._linear_velocity_tracking(state.info['Control commands'],body_vel))}
-        """
+                2*self._linear_velocity_tracking(state.info['Control commands'],body_vel)),
+        
             # 'tracking angular velocity reward':(
             #     1.5*self._angular_velocity_tracking(state.info['Control commands'],body_vel)),
 
@@ -283,22 +288,23 @@ class H1(PipelineEnv):
             # 'Both leg in the air penalty':(
             #     -2*self._both_foot_air_penalty(contact)),
 
-            'joint limit penalty':(
-                -2*self._joint_limit_penalty(limited_angle)),
+            #'joint limit penalty':(
+            #    -2*self._joint_limit_penalty(limited_angle)),
 
             'orientation penalty':(
                 -1*self._orientation_penalty(body_pos)),
 
-            'feet position penalty':(
-                -2*self._feet_position_penalty(body_pos)),
+            #'feet position penalty':(
+            #    -2*self._feet_position_penalty(body_pos)),
 
-            'z position penalty':(
-                -2*self._z_position_penalty(body_pos)),
+            #'z position penalty':(
+            #    -2*self._z_position_penalty(body_pos)),
 
             'orientation walking penalty':(
                 -3*self._orientation_walking_penalty(orientation,body_pos))
              
         }"""
+        rewards={'rew':1}
 
         # calculate the total reward
         reward = sum(rewards.values())
@@ -585,7 +591,7 @@ class H1(PipelineEnv):
     #  Reward functions
 
 
-    def _linear_velocity_tracking(self,
+    def _linear_velocity_tracking(self, #todo: might need to use angular from command too, if not then might need to remove this reward
                                   command:jax.Array,
                                   body_vel:Motion) -> jax.Array:
         """
@@ -605,7 +611,182 @@ class H1(PipelineEnv):
         reward = jp.exp(-linear_vel_err/0.25)
 
         return reward
+        
+    def _linear_velocity_penalty(self,
+                                 body_vel:Motion) -> jax.Array:
+        """
+        penalty term for z axis velocity of pelvis
+
+        provide steady walking and pace
+
+        formula:
+            q_z = -velocity_z^2
+        """
+        # calculate reward
+        reward = jp.square(body_vel.vel[self.pelvis_id-1,2])
+
+        return reward
+        
     
+    
+    
+    def _angular_velocity_penalty(self,
+                                  body_vel:Motion) -> jax.Array:
+        """
+        penalty term for x-y plane angular velocity
+
+        increase stability and reduce spinning
+
+        formula:
+            q_ang = -angular_velocity^2
+        """
+        # calculate reward
+        reward = jp.sum(jp.square(body_vel.ang[self.pelvis_id-1,:2]))
+
+        return reward
+
+        
+    def _joint_torque_penalty(self,
+                              joint_torque:jax.Array) -> jax.Array:
+        """
+        penalty term for L2 norm of the total torques
+
+        L2 norm: square root of the sum of the squares of the elements
+        it provides a single scalar reprsents the magnitude of the torque vector
+        in this case it means the strength or energy of the torques applied by all actuators combined
+        this can encourage the robot to use less overall torque to achieve its objectives
+        therefore discourage from applying large torques across multiple actuators
+
+        """
+        # calculate L2 norm of torque
+        L2_norm = jp.sqrt(jp.sum(jp.square(joint_torque)))
+        
+        # calculate reward
+        reward = L2_norm
+
+        return reward
+    
+    def _motion_standing_still_penalty(self,
+                               command:jax.Array,
+                               joint_angle:jax.Array) -> jax.Array:
+        """
+        penalty term for offset of robot when no command
+
+        encourage robot to stand still when no command
+
+        formula:
+            q_still = -offset^2
+        """
+        # calculate the error
+        # the second term represent when small or no command are given
+        reward = jp.mean((joint_angle - self.default_jnt_angle)**2) * (math.normalize(command[:2])[1] < 0.1)
+
+        return reward
+
+
+
+    def _feet_air_time_reward(self,
+                              air_time:jax.Array,
+                              first_contact:jax.Array,
+                              command:jax.Array) -> jax.Array:
+        """
+        reward term for spending time in the air, encouraging taking steps
+
+        formula:
+            q_air = sum(t_air - 0.5)
+        """
+
+        # obtain the reward when it making the first contact
+        reward = jp.sum((air_time - 0.5) * first_contact)
+
+        # check if there is a command
+        reward *= (math.normalize(command[:2])[1] > 0.1)
+
+        return reward
+    
+    def _single_leg_on_ground_reward(self,
+                                     contact:jax.Array,
+                                     command:jax.Array) -> jax.Array:
+        """
+        reward term for encouraging the agent to keep one foot in contact with ground at all time
+        """
+        # check if single_contact
+        singe_contact = jp.sum(contact) == 1
+
+        # update reward
+        reward = 1.0*singe_contact*(math.normalize(command[:2])[1] > 0.1)
+
+        return reward
+    
+
+
+    def _early_termination_penalty(self,
+                                   done:jax.Array,
+                                   step:jax.Array) -> jax.Array:
+        """
+        penalty term for early termination
+
+        discourage the agent from terminating the episode early
+        """
+        # calculate reward
+        terminal_early = done * (step < 950)
+        reward = (950 - step) * terminal_early
+
+        return reward
+    
+
+    def _orientation_walking_penalty(self,
+                                     orientation:jax.Array,
+                                     body_pos:Transform) -> jax.Array:
+        """
+        penalty term for orientation of the robot
+        """
+        # define global y-axis
+        global_x = jp.array([1.0,0.0,0.0])
+
+        # calculate the local y-axis
+        local_x = math.rotate(global_x,body_pos.rot[self.pelvis_id-1])
+
+        # ignore z-axis
+        local_x = local_x[:2]
+
+        # calculate the error
+        reward = jp.sum(jp.abs(orientation - local_x))
+
+        return reward
+    
+    def _orientation_penalty(self,
+                             body_pos:Transform) -> jax.Array:
+        """
+        penalty term for orientation of the robot
+        """
+        # define global up direction
+        up = jp.array([0.0,0.0,1.0])
+
+        # calculate the local up direction
+        rot_up = math.rotate(up,body_pos.rot[self.pelvis_id-1])
+
+        # calculate the error
+        reward = jp.sum(jp.square(rot_up[:2]))
+
+        return reward
+    
+    def _action_rate_penalty(self,
+                             action:jax.Array,
+                             last_action:jax.Array) -> jax.Array:
+        """
+        penalty term for the rate of change of the action
+
+        discourage agressive action and encourage smooth control
+
+        formula:
+            q_rate = -(action-last_action)^2
+        """
+        # calculate reward
+        reward = jp.mean((action - last_action)**2)
+
+        return reward
+
 
 
     def _alive_reward(self,
@@ -638,7 +819,7 @@ train_fn = functools.partial(
       reward_scaling=1, episode_length=1000, normalize_observations=True,
       action_repeat=1, unroll_length=20, num_minibatches=32,
       num_updates_per_batch=4, discounting=0.97, learning_rate=3.0e-4,
-      entropy_cost=1e-2, num_envs=4096, batch_size=256,
+      entropy_cost=1e-2, num_envs=8196, batch_size=256,
       network_factory=make_networks_factory)#todo add previous model
 
 x_data = []
@@ -647,6 +828,7 @@ ydataerr = []
 times = [datetime.now()]
 
 def progress(num_steps, metrics):
+    print("num_steps    ",num_steps)
     times.append(datetime.now())
     x_data.append(num_steps)
     y_data.append(metrics['eval/episode_reward'])
